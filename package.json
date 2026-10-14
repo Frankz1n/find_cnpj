@@ -1,0 +1,23 @@
+{
+  "name": "orbyts-company-finder",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Orbyts Company Finder — pesquisa e identificação de empresas",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,green \"npm run dev -w @orbyts/api\" \"npm run dev -w @orbyts/web\"",
+    "dev:api": "npm run dev -w @orbyts/api",
+    "dev:web": "npm run dev -w @orbyts/web",
+    "test": "npm run test -w @orbyts/api",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
