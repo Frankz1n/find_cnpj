@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "https://find-cnpj-1.onrender.com/api/$1"
+    },
+    {
+      "source": "/health",
+      "destination": "https://find-cnpj-1.onrender.com/health"
+    }
+  ]
+}
