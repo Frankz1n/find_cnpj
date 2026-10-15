@@ -120,9 +120,12 @@ export function genericPhoneKeys(companies: ReceitaCompany[]): Set<string> {
 function classify(best: Scored, activeStrong: Scored[]): Confidence {
   const inactive = isInactiveRegistration(best.company.situacaoCadastral);
   if (inactive && activeStrong.length === 0) return "NAO_ENCONTRADO";
-  if (best.score < 50) return "BAIXA";
-  if (best.score >= 80) return "ALTA";
-  return "MEDIA";
+  const hasAddress = best.reasons.some((reason) => reason.startsWith("Endereço"));
+  const hasSupport = best.reasons.some((reason) => /^(telefone|nome|Instagram)/.test(reason));
+  if (hasAddress && hasSupport) return "ALTA";
+  if (hasAddress || hasSupport) return "MEDIA";
+  if (best.score > 0) return "BAIXA";
+  return "NAO_ENCONTRADO";
 }
 
 function scoreCandidate(row: SheetRow, company: ReceitaCompany, genericPhones: Set<string>): Scored {

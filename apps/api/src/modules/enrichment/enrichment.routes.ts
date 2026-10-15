@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { AppError } from "../../http/app-error.js";
+import { isValidCnpj } from "../search/cnpj.js";
 import type { BrasilApiGateway } from "../integrations/brasilapi/brasilapi-client.js";
 import type { ApifyGateway } from "./apify-client.js";
 import { runEnrichmentJob, type IbgeGateway } from "./run-job.js";
@@ -60,6 +61,28 @@ export function createEnrichmentRouter(services: EnrichmentServices): Router {
     response.status(200).json({ data: services.store.listAccepted() });
   });
 
+  router.get("/enrichment/cnpj/:cnpj", async (request, response, next) => {
+    const cnpj = parameter(request.params.cnpj).replace(/\D/g, "");
+    if (!isValidCnpj(cnpj)) {
+      next(new AppError(400, "VALIDATION_ERROR", "O CNPJ informado é inválido."));
+      return;
+    }
+    try {
+      const lookup = await services.brasilApi.lookup(cnpj);
+      if (lookup.status === "confirmed") {
+        response.status(200).json({ data: lookup.company });
+        return;
+      }
+      if (lookup.status === "not_found") {
+        next(new AppError(404, "NOT_FOUND", "A Brasil API não encontrou este CNPJ."));
+        return;
+      }
+      next(new AppError(502, "UPSTREAM_ERROR", lookup.message));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get("/enrichment/jobs/:jobId", (request, response, next) => {
     const job = services.store.getJob(parameter(request.params.jobId));
     if (!job) {
@@ -111,24 +134,26 @@ export function createEnrichmentRouter(services: EnrichmentServices): Router {
       error: null,
     };
     services.store.createJob(job);
+    const rows = parsed.data.rows.map((row) => ({
+      line: row.line,
+      name: row.name ?? null,
+      landline: row.landline ?? null,
+      mobile: row.mobile ?? null,
+      instagram: row.instagram ?? null,
+      professionals: row.professionals ?? null,
+      specialty: row.specialty ?? null,
+      address: row.address ?? null,
+      city: row.city ?? null,
+      state: row.state ?? null,
+    }));
+    services.store.saveSheet(job.id, { defaultState: parsed.data.defaultState, rows });
     const task = runEnrichmentJob({
       store: services.store,
       apify: services.apify,
       ibge: services.ibge,
       brasilApi: services.brasilApi,
       jobId: job.id,
-      rows: parsed.data.rows.map((row) => ({
-        line: row.line,
-        name: row.name ?? null,
-        landline: row.landline ?? null,
-        mobile: row.mobile ?? null,
-        instagram: row.instagram ?? null,
-        professionals: row.professionals ?? null,
-        specialty: row.specialty ?? null,
-        address: row.address ?? null,
-        city: row.city ?? null,
-        state: row.state ?? null,
-      })),
+      rows,
       defaultState: parsed.data.defaultState,
     });
     services.trackJob?.(task);

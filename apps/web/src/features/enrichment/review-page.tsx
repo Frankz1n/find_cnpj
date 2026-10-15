@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { PageHeader } from "../../components/page-header";
-import { apiGet, apiSend, confidenceLabels, type Confidence, type EnrichmentJob, type EnrichmentResult } from "./api";
+import { apiGet, confidenceLabels, type Confidence, type EnrichmentJob, type EnrichmentResult } from "./api";
+import { CompanyCard } from "./company-card";
+import { CompanyDetailsModal } from "./company-details-modal";
 
 const filters: Array<Confidence | "TODAS"> = ["TODAS", "ALTA", "MEDIA", "BAIXA", "NAO_ENCONTRADO"];
 
@@ -11,9 +13,11 @@ export function ReviewPage() {
   const [results, setResults] = useState<EnrichmentResult[]>([]);
   const [filter, setFilter] = useState<Confidence | "TODAS">("TODAS");
   const [message, setMessage] = useState<string | null>(null);
+  const [selected, setSelected] = useState<EnrichmentResult | null>(null);
 
   useEffect(() => {
     if (!jobId) return undefined;
+    localStorage.setItem("orbyts.active-job", jobId);
     let stopped = false;
 
     async function load() {
@@ -23,20 +27,19 @@ export function ReviewPage() {
         setJob(data.job);
         setResults(data.results);
         setMessage(data.job.error);
+        if (data.job.status !== "running") window.clearInterval(timer);
       } catch (error) {
         if (!stopped) setMessage(error instanceof Error ? error.message : "Não foi possível carregar a importação.");
       }
     }
 
     void load();
-    const timer = window.setInterval(() => {
-      if (job?.status === "running" || job === null) void load();
-    }, 2000);
+    const timer = window.setInterval(() => void load(), 4000);
     return () => {
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [jobId, job?.status]);
+  }, [jobId]);
 
   if (!jobId) return <JobPicker />;
 
@@ -47,75 +50,85 @@ export function ReviewPage() {
       <PageHeader
         title={job?.fileName ?? "Revisão"}
         subtitle={job ? progressText(job) : "Carregando a importação..."}
+        notice={job?.status === "running" ? <ValidationNotice processed={job.processed} total={job.total} /> : undefined}
       />
-      {message ? <p className="mt-4 text-sm text-[#b42318]">{message}</p> : null}
-      <div className="mt-6 flex flex-wrap items-center gap-2">
-        {filters.map((item) => (
-          <button
-            key={item}
-            type="button"
-            onClick={() => setFilter(item)}
-            className={`rounded-full px-4 py-2 text-sm ${filter === item ? "bg-[#547be2] text-white" : "bg-[#f5f7fb] text-[#667085]"}`}
-          >
-            {item === "TODAS" ? "Todas" : confidenceLabels[item]}
-          </button>
-        ))}
-        <a href={`/api/enrichment/jobs/${jobId}/export`} className="rounded-full bg-[#f5f7fb] px-4 py-2 text-sm text-[#547be2]">CSV</a>
-        <a href={`/api/enrichment/jobs/${jobId}/export?format=xls`} className="rounded-full bg-[#f5f7fb] px-4 py-2 text-sm text-[#547be2]">Excel</a>
+      {message ? <p className="mt-4 rounded-2xl bg-[#fdecec] px-4 py-3 text-sm text-[#b42318]">{message}</p> : null}
+      <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap gap-2">
+          {filters.map((item) => {
+            const count = item === "TODAS" ? results.length : results.filter((result) => result.confidence === item).length;
+            const isSelected = filter === item;
+            return (
+              <button
+                key={item}
+                type="button"
+                onClick={() => setFilter(item)}
+                className={`inline-flex items-center gap-2 rounded-full px-3.5 py-2 text-sm font-medium ${isSelected ? "bg-[#547be2] text-white" : "bg-[#f6f8fc] text-[#667085] hover:bg-[#eef2fc]"}`}
+              >
+                {item === "TODAS" ? "Todas" : confidenceLabels[item]}
+                <span className={isSelected ? "text-white/75" : "text-[#98a2b3]"}>{count}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex gap-2">
+          <a href={`/api/enrichment/jobs/${jobId}/export`} className="rounded-full border border-[#e6ebf2] px-4 py-2 text-sm font-medium text-[#547be2] hover:bg-[#f6f8fc]">CSV</a>
+          <a href={`/api/enrichment/jobs/${jobId}/export?format=xls`} className="rounded-full border border-[#e6ebf2] px-4 py-2 text-sm font-medium text-[#547be2] hover:bg-[#f6f8fc]">Excel</a>
+        </div>
       </div>
-      <div className="mt-6 flex flex-col gap-4">
-        {visible.map((result) => (
-          <article key={result.id} className="rounded-3xl bg-[#f5f7fb] p-5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <h2 className="text-lg font-semibold text-[#1d2433]">{result.line.name ?? "Sem nome"}</h2>
-                <p className="mt-1 text-sm text-[#667085]">{result.razaoSocial ?? "Sem razão social"}{result.nomeFantasia ? ` · ${result.nomeFantasia}` : ""}</p>
-              </div>
-              <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-[#547be2]">{confidenceLabels[result.confidence]} · {result.score}</span>
+      {!job ? null : visible.length === 0 ? (
+        <p className="mt-8 rounded-2xl border border-dashed border-[#d5deea] px-6 py-12 text-center text-sm text-[#667085]">Nenhuma empresa neste filtro.</p>
+      ) : (
+        groupByCity(visible).map(([city, items]) => (
+          <section key={city} className="mt-8">
+            <div className="mb-3 flex items-baseline justify-between gap-3">
+              <h2 className="text-sm font-semibold text-[#1d2433]">{city}</h2>
+              <p className="text-xs text-[#98a2b3]">{items.length} {items.length === 1 ? "empresa" : "empresas"}</p>
             </div>
-            <p className="mt-3 text-sm leading-6 text-[#344054]">{result.justification}</p>
-            <p className="mt-2 text-sm text-[#667085]">
-              {formatCnpj(result.cnpj)} · {result.situacaoCadastral ?? "Situação não informada"} · {result.line.address}
-            </p>
-            {result.brasilApi?.status === "confirmed" ? <p className="mt-2 text-sm text-[#027a48]">Validado pela Brasil API.</p> : null}
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button type="button" disabled={!result.cnpj} onClick={() => void decide(result, { decision: "aceito" })} className="rounded-full bg-[#547be2] px-4 py-2 text-sm text-white disabled:opacity-40">Aceitar</button>
-              <button type="button" onClick={() => void decide(result, { decision: "sem_cnpj" })} className="rounded-full bg-white px-4 py-2 text-sm text-[#667085]">Sem CNPJ</button>
-              {result.alternatives.map((alternative) => (
-                <button key={alternative.cnpj} type="button" onClick={() => void decide(result, { decision: "alternativa", cnpj: alternative.cnpj })} className="rounded-full bg-white px-4 py-2 text-sm text-[#547be2]">
-                  {formatCnpj(alternative.cnpj)} · {alternative.score}
-                </button>
+            <div className="grid gap-3 xl:grid-cols-2">
+              {items.map((result) => (
+                <CompanyCard key={result.id} result={result} onOpen={setSelected} />
               ))}
             </div>
-            {result.decision ? <p className="mt-3 text-xs text-[#98a2b3]">Decisão: {result.decision === "aceito" ? "aceito" : "sem CNPJ"}</p> : null}
-          </article>
-        ))}
-      </div>
+          </section>
+        ))
+      )}
+      {selected ? <CompanyDetailsModal result={selected} onClose={() => setSelected(null)} /> : null}
     </section>
   );
-
-  async function decide(result: EnrichmentResult, body: { decision: "aceito" | "sem_cnpj" | "alternativa"; cnpj?: string }) {
-    if (!jobId) return;
-    const updated = await apiSend<EnrichmentResult>(`/api/enrichment/jobs/${jobId}/results/${result.id}/decision`, body);
-    setResults((current) => current.map((item) => (item.id === updated.id ? updated : item)));
-  }
 }
 
 function JobPicker() {
-  const [jobs, setJobs] = useState<EnrichmentJob[]>([]);
+  const navigate = useNavigate();
+  const [empty, setEmpty] = useState(false);
+
   useEffect(() => {
-    void apiGet<EnrichmentJob[]>("/api/enrichment/jobs").then(setJobs).catch(() => setJobs([]));
-  }, []);
-  const latest = jobs[0];
+    const remembered = localStorage.getItem("orbyts.active-job");
+    void apiGet<EnrichmentJob[]>("/api/enrichment/jobs")
+      .then((jobs) => {
+        const current = jobs.find((job) => job.id === remembered) ?? jobs.find((job) => job.status === "running") ?? jobs[0];
+        if (current) navigate(`/pesquisa/${current.id}`, { replace: true });
+        else setEmpty(true);
+      })
+      .catch(() => setEmpty(true));
+  }, [navigate]);
+
   return (
     <section>
-      <PageHeader title="Revisão" subtitle="Escolha uma importação para aceitar, trocar ou descartar o CNPJ." />
-      {latest ? (
-        <Link to={`/pesquisa/${latest.id}`} className="mt-8 inline-flex rounded-full bg-[#547be2] px-5 py-3 text-sm font-medium text-white">Abrir {latest.fileName}</Link>
-      ) : (
+      <PageHeader title="Pesquisa" subtitle={empty ? "Nenhuma pesquisa salva ainda." : "Abrindo a última pesquisa salva..."} />
+      {empty ? (
         <Link to="/importacao" className="mt-8 inline-flex rounded-full bg-[#547be2] px-5 py-3 text-sm font-medium text-white">Importar uma lista</Link>
-      )}
+      ) : null}
     </section>
+  );
+}
+
+function ValidationNotice({ processed, total }: { processed: number; total: number }) {
+  return (
+    <p className="flex max-w-xs items-center gap-2 rounded-full bg-[#e7ecfb] px-4 py-2 text-sm text-[#547be2]" role="status">
+      <span className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-[#547be2]" />
+      Validando o restante da lista · {processed} de {total}
+    </p>
   );
 }
 
@@ -126,7 +139,13 @@ function progressText(job: EnrichmentJob): string {
   return `${job.total} linhas concluídas. Custo estimado ${cost}.`;
 }
 
-function formatCnpj(value: string | null): string {
-  if (!value) return "Sem CNPJ";
-  return value.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5");
+function groupByCity(results: EnrichmentResult[]): Array<[string, EnrichmentResult[]]> {
+  const groups = new Map<string, EnrichmentResult[]>();
+  for (const result of results) {
+    const city = result.line.city?.trim() || "Cidade não informada";
+    const current = groups.get(city) ?? [];
+    current.push(result);
+    groups.set(city, current);
+  }
+  return [...groups.entries()];
 }

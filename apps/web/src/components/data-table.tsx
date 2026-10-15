@@ -29,10 +29,10 @@ export function DataTable({ columns, template, rows }: DataTableProps) {
           return (
             <div
               key={row.id}
-              className={`grid ${template} items-center rounded-2xl px-3 py-3 text-[13px] sm:px-4 sm:py-4 sm:text-sm ${
+              className={`grid ${template} items-center rounded-2xl border px-3 py-3 text-[13px] transition sm:px-4 sm:py-4 sm:text-sm ${
                 isSelected
-                  ? "bg-[#547be2] text-white shadow-[0_12px_28px_rgba(84,123,226,0.28)]"
-                  : "bg-[#f5f7fb] text-[#1d2433]"
+                  ? "border-[#547be2] bg-[#547be2] text-white shadow-[0_12px_28px_rgba(84,123,226,0.28)]"
+                  : "border-[#e6ebf2] bg-white text-[#1d2433] hover:border-[#c5d2ee]"
               }`}
             >
               {row.cells.map((cell, index) => (

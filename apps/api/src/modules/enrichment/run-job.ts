@@ -1,8 +1,8 @@
 import { BRASILAPI_RATE_LIMIT_MESSAGE, type BrasilApiGateway } from "../integrations/brasilapi/brasilapi-client.js";
 import type { ApifyGateway } from "./apify-client.js";
-import { priorityCnaeCodes } from "./cnae-catalog.js";
+import { priorityCnaeCodes, discoveryLimit, SECOND_ROUND_CNAES } from "./cnae-catalog.js";
 import { matchRow, type MatchOutcome, type SheetRow } from "./match.js";
-import type { ReceitaCompany } from "./receita-company.js";
+import { isInactiveRegistration, type ReceitaCompany } from "./receita-company.js";
 import { type BrasilApiNote, type NewResult, type EnrichmentStore } from "./store.js";
 import { normalizeText } from "./text.js";
 
@@ -22,6 +22,7 @@ type RunEnrichmentInput = {
   jobId: string;
   rows: SheetRow[];
   defaultState: string;
+  initialProcessed?: number;
   concurrency?: number;
 };
 
@@ -29,16 +30,25 @@ export async function runEnrichmentJob(input: RunEnrichmentInput): Promise<void>
   const limit = createLimiter(input.concurrency ?? 3);
   const pending = new Map<string, Promise<ReceitaCompany[]>>();
   const loaded = new Map<string, ReceitaCompany[]>();
-  let processed = 0;
+  let processed = input.initialProcessed ?? 0;
+  const savedLines = new Set(input.store.listResults(input.jobId).map((result) => result.line.line));
+
+  function remember(results: NewResult[]): NewResult[] {
+    const fresh: NewResult[] = [];
+    for (const result of results) {
+      if (savedLines.has(result.line.line)) continue;
+      input.store.insertResult({ ...result, jobId: input.jobId });
+      savedLines.add(result.line.line);
+      processed += 1;
+      input.store.updateJob(input.jobId, { processed });
+      fresh.push(result);
+    }
+    return fresh;
+  }
 
   try {
     for (const group of groupRows(input.rows, input.defaultState)) {
-      const outcomes = await matchGroup(group);
-      for (const outcome of outcomes) {
-        input.store.insertResult({ ...outcome, jobId: input.jobId });
-        processed += 1;
-        input.store.updateJob(input.jobId, { processed });
-      }
+      await matchGroup(group);
     }
     input.store.updateJob(input.jobId, { status: "succeeded", processed, finishedAt: new Date().toISOString() });
   } catch (error) {
@@ -50,48 +60,35 @@ export async function runEnrichmentJob(input: RunEnrichmentInput): Promise<void>
     });
   }
 
-  async function matchGroup(group: RowGroup): Promise<NewResult[]> {
-    if (!group.city) return confirm(group.rows.map((row) => toResult(row, unmatched("A linha não tem cidade."))));
+  async function matchGroup(group: RowGroup): Promise<void> {
+    if (!group.city) {
+      await finish(group.rows.map((row) => toResult(row, unmatched("A linha não tem cidade."))));
+      return;
+    }
 
     const municipality = await resolveMunicipality(group.city, group.state);
     if (!municipality) {
-      return confirm(group.rows.map((row) => toResult(row, unmatched(`Cidade não encontrada no IBGE para ${group.state}.`))));
+      await finish(group.rows.map((row) => toResult(row, unmatched(`Cidade não encontrada no IBGE para ${group.state}.`))));
+      return;
     }
 
     const catalog = input.store.listCnaes();
-    const selected = new Map(group.rows.map((row) => [row.line, priorityCnaeCodes(row.specialty, catalog)]));
-    await load(group.state, municipality.code, unique(group.rows.flatMap((row) => selected.get(row.line) ?? [])));
+    const firstCodes = unique(group.rows.flatMap((row) => priorityCnaeCodes(row.specialty, catalog)));
+    await load(group.state, municipality.code, firstCodes);
+    let pool = companiesFor(municipality.code, firstCodes);
+    const draft = group.rows.map((row) => ({ row, outcome: matchRow(row, pool) }));
 
-    const draft = group.rows.map((row) => ({
-      row,
-      cnaes: selected.get(row.line) ?? [],
-      outcome: matchRow(row, companiesFor(municipality.code, selected.get(row.line) ?? [])),
-    }));
-
-    const expandable = draft.filter((item) => item.outcome.score < 50);
-    if (expandable.length > 0) {
-      const allCodes = catalog.map((item) => item.code);
-      await load(group.state, municipality.code, allCodes.filter((code) => !loaded.has(`${municipality.code}:${code}`)));
-      for (const item of expandable) {
-        item.cnaes = allCodes;
-        item.outcome = matchRow(item.row, companiesFor(municipality.code, allCodes));
-      }
+    const unmatchedRows = draft.filter((item) => item.outcome.cnpj === null || item.outcome.confidence === "BAIXA");
+    if (unmatchedRows.length > 0) {
+      const secondCodes = SECOND_ROUND_CNAES.filter((code) => catalog.some((item) => item.code === code));
+      await load(group.state, municipality.code, secondCodes);
+      pool = companiesFor(municipality.code, [...firstCodes, ...secondCodes]);
+      for (const item of unmatchedRows) item.outcome = matchRow(item.row, pool);
     }
 
-    const medium = draft.filter((item) => item.outcome.confidence === "MEDIA" && item.outcome.cnpj);
-    if (medium.length > 0) {
-      const lookedUp = await limit(() => input.apify.run({ mode: "lookup", cnpjs: unique(medium.map((item) => item.outcome.cnpj ?? "")) }));
-      input.store.addCost(input.jobId, lookedUp.estimatedCostUsd);
-      const details = new Map(lookedUp.items.map((company) => [company.cnpj, company]));
-      for (const item of medium) {
-        const detail = item.outcome.cnpj ? details.get(item.outcome.cnpj) : undefined;
-        if (!detail) continue;
-        const companies = companiesFor(municipality.code, item.cnaes).map((company) => (company.cnpj === detail.cnpj ? detail : company));
-        item.outcome = matchRow(item.row, companies);
-      }
-    }
-
-    return confirm(draft.map((item) => toResult(item.row, item.outcome)));
+    const results = remember(draft.map((item) => toResult(item.row, item.outcome)));
+    await lookupChosen(results);
+    await confirm(results);
   }
 
   function load(state: string, municipio: string, cnaes: string[]): Promise<void> {
@@ -108,7 +105,7 @@ export async function runEnrichmentJob(input: RunEnrichmentInput): Promise<void>
         loaded.set(key, cached);
         return cached;
       }
-      const run = await input.apify.run({ mode: "discovery", cnae, uf: state, municipio, maxResults: 1000 });
+      const run = await input.apify.run({ mode: "discovery", cnae, uf: state, municipio, maxResults: discoveryLimit(cnae) });
       input.store.addCost(input.jobId, run.estimatedCostUsd);
       input.store.writeCache(municipio, cnae, run.items, Date.now());
       loaded.set(key, run.items);
@@ -141,36 +138,65 @@ export async function runEnrichmentJob(input: RunEnrichmentInput): Promise<void>
     return input.store.findMunicipality(normalizeText(city), state);
   }
 
-  async function confirm(results: NewResult[]): Promise<NewResult[]> {
+  async function lookupChosen(results: NewResult[]): Promise<void> {
+    const cnpjs = unique(
+      results
+        .filter((result) => result.cnpj && (result.confidence === "ALTA" || result.confidence === "MEDIA"))
+        .map((result) => result.cnpj ?? ""),
+    );
+    if (cnpjs.length === 0) return;
+    const lookedUp = await limit(() => input.apify.run({ mode: "lookup", cnpjs }));
+    input.store.addCost(input.jobId, lookedUp.estimatedCostUsd);
+    const details = new Map(lookedUp.items.map((company) => [company.cnpj, company]));
+    for (const result of results) {
+      const detail = result.cnpj ? details.get(result.cnpj) : undefined;
+      if (!detail) continue;
+      result.razaoSocial = detail.razaoSocial;
+      result.nomeFantasia = detail.nomeFantasia;
+      result.situacaoCadastral = detail.situacaoCadastral;
+      const address = [detail.endereco.logradouro, detail.endereco.numero, detail.endereco.bairro].filter((part) => part && part.trim()).join(", ");
+      if (address) result.enderecoReceita = address;
+      if (detail.telefones.length > 0) result.telefonesReceita = detail.telefones;
+      if (isInactiveRegistration(detail.situacaoCadastral)) {
+        result.confidence = "NAO_ENCONTRADO";
+        result.decision = null;
+        result.cnpj = null;
+        result.justification = `${result.justification} O lookup confirmou situação ${detail.situacaoCadastral}.`;
+      }
+      input.store.updateResult({ ...result, reviewedBy: null, reviewedAt: null });
+    }
+  }
+
+  async function finish(results: NewResult[]): Promise<void> {
+    await confirm(remember(results));
+  }
+
+  async function confirm(results: NewResult[]): Promise<void> {
     let blocked = false;
     for (const result of results) {
       if (!result.cnpj || (result.confidence !== "ALTA" && result.confidence !== "MEDIA")) {
         result.brasilApi = skipped(null);
-        continue;
-      }
-      if (blocked) {
+      } else if (blocked) {
         result.brasilApi = skipped(BRASILAPI_RATE_LIMIT_MESSAGE);
-        continue;
+      } else {
+        const lookup = await input.brasilApi.lookup(result.cnpj);
+        if (lookup.status === "rate_limited") {
+          blocked = true;
+          result.brasilApi = { status: "rate_limited", message: lookup.message };
+        } else if (lookup.status === "confirmed") {
+          result.razaoSocial = lookup.company.legalName ?? result.razaoSocial;
+          result.nomeFantasia = lookup.company.tradeName ?? result.nomeFantasia;
+          result.situacaoCadastral = lookup.company.registrationStatus ?? result.situacaoCadastral;
+          if (lookup.company.address) result.enderecoReceita = lookup.company.address;
+          if (lookup.company.phones.length > 0) result.telefonesReceita = lookup.company.phones;
+          result.justification = `${result.justification} Validado pela Brasil API.`;
+          result.brasilApi = { status: "confirmed", message: null };
+        } else {
+          result.brasilApi = { status: lookup.status, message: "message" in lookup ? lookup.message : null };
+        }
       }
-      const lookup = await input.brasilApi.lookup(result.cnpj);
-      if (lookup.status === "rate_limited") {
-        blocked = true;
-        result.brasilApi = { status: "rate_limited", message: lookup.message };
-        continue;
-      }
-      if (lookup.status === "confirmed") {
-        result.razaoSocial = lookup.company.legalName ?? result.razaoSocial;
-        result.nomeFantasia = lookup.company.tradeName ?? result.nomeFantasia;
-        result.situacaoCadastral = lookup.company.registrationStatus ?? result.situacaoCadastral;
-        if (lookup.company.address) result.enderecoReceita = lookup.company.address;
-        if (lookup.company.phones.length > 0) result.telefonesReceita = lookup.company.phones;
-        result.justification = `${result.justification} Validado pela Brasil API.`;
-        result.brasilApi = { status: "confirmed", message: null };
-        continue;
-      }
-      result.brasilApi = { status: lookup.status, message: "message" in lookup ? lookup.message : null };
+      input.store.updateResult({ ...result, reviewedBy: null, reviewedAt: null });
     }
-    return results;
   }
 }
 

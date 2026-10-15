@@ -35,6 +35,17 @@ describe("job de enriquecimento", () => {
     expect(results.get(8)?.justification).toMatch(/digitação/);
     expect(results.get(9)?.cnpj).toBe("41928526000113");
     expect(calls.filter((call) => call.mode === "discovery" && call.cnae === "8630504")).toHaveLength(1);
+    expect(calls.filter((call) => call.mode === "discovery").map((call) => call.cnae).sort()).toEqual([
+      "8610102",
+      "8630501",
+      "8630502",
+      "8630503",
+      "8630504",
+      "8640205",
+    ]);
+    expect(calls.find((call) => call.mode === "discovery" && call.cnae === "8640205")).toMatchObject({ maxResults: 100 });
+    expect(calls.find((call) => call.mode === "discovery" && call.cnae === "8630504")).toMatchObject({ maxResults: 300 });
+    expect(calls.filter((call) => call.mode === "lookup")).toHaveLength(1);
     expect(finished?.estimatedCostUsd).toBeGreaterThan(0);
 
     const secondCalls: ApifyRunInput[] = [];
@@ -84,6 +95,15 @@ function confirmingBrasilApi(): BrasilApiGateway {
           legalName: null,
           tradeName: null,
           registrationStatus: "ATIVA",
+          openedAt: null,
+          legalNature: null,
+          size: null,
+          capital: null,
+          email: null,
+          branch: null,
+          mainCnae: null,
+          secondaryCnaes: [],
+          partners: [],
           phones: [],
           address: null,
           city: "SANTA FE DO SUL",

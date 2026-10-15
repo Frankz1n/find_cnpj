@@ -1,10 +1,9 @@
-import { Building2, Cable, FileSpreadsheet, History, LayoutGrid, Search, type LucideIcon } from "lucide-react";
+import { Cable, FileSpreadsheet, History, LayoutGrid, Search, type LucideIcon } from "lucide-react";
 import { Link, NavLink, Outlet } from "react-router-dom";
 
 const navigation: Array<{ to: string; label: string; icon: LucideIcon; end?: boolean }> = [
   { to: "/", label: "Painel", icon: LayoutGrid, end: true },
   { to: "/pesquisa", label: "Pesquisa", icon: Search },
-  { to: "/empresas", label: "Empresas", icon: Building2 },
   { to: "/importacao", label: "Importação", icon: FileSpreadsheet },
   { to: "/historico", label: "Histórico", icon: History },
   { to: "/integracoes", label: "Integrações", icon: Cable },

@@ -13,9 +13,9 @@ export function DashboardPage() {
   return (
     <section>
       <PageHeader title="Painel" subtitle={healthSubtitle(health)} />
-      <p className="mt-6 max-w-2xl text-sm leading-6 text-[#667085]">
+      <div className="mt-6 max-w-2xl rounded-2xl border border-[#e6ebf2] bg-[#f6f8fc] px-5 py-4 text-sm leading-6 text-[#667085]">
         A pesquisa não usa mais o nome da clínica como razão social. A importação puxa as empresas de saúde do município e cruza pelo endereço, telefone e profissionais.
-      </p>
+      </div>
       <Link to="/importacao" className="mt-6 inline-flex rounded-full bg-[#547be2] px-5 py-3 text-sm font-medium text-white">Importar uma lista</Link>
       <DataTable
         columns={["Integração", "Função", "Limite", "Uso", "Status"]}

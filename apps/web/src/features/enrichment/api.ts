@@ -1,3 +1,23 @@
+export type BrasilApiCompany = {
+  cnpj: string;
+  legalName: string | null;
+  tradeName: string | null;
+  registrationStatus: string | null;
+  openedAt: string | null;
+  legalNature: string | null;
+  size: string | null;
+  capital: string | null;
+  email: string | null;
+  branch: string | null;
+  mainCnae: string | null;
+  secondaryCnaes: string[];
+  partners: Array<{ name: string; role: string | null }>;
+  phones: string[];
+  address: string | null;
+  city: string | null;
+  state: string | null;
+};
+
 export type Confidence = "ALTA" | "MEDIA" | "BAIXA" | "NAO_ENCONTRADO";
 
 export type SheetPayload = {

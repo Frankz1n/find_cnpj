@@ -25,7 +25,7 @@ type ApifyGatewayOptions = {
   maxChargeUsd?: number;
   pricePerResultUsd?: number;
   timeoutSeconds?: number;
-  memoryMb?: number;
+  lookupMaxChargeUsd?: number;
   pageSize?: number;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
@@ -48,10 +48,9 @@ export function createApifyGateway(options: ApifyGatewayOptions): ApifyGateway {
   const baseUrl = (options.baseUrl ?? "https://api.apify.com/v2").replace(/\/$/, "");
   const token = options.token;
   const maxChargeUsd = options.maxChargeUsd ?? 1;
+  const lookupMaxChargeUsd = options.lookupMaxChargeUsd ?? 0.5;
   const pricePerResultUsd = options.pricePerResultUsd ?? 0.0015;
-  const timeoutSeconds = options.timeoutSeconds ?? 300;
-  const memoryMb = options.memoryMb ?? 256;
-  const pageSize = options.pageSize ?? 1000;
+  const pageSize = options.pageSize ?? 100;
   const fetchImpl = options.fetchImpl ?? fetch;
   const sleep = options.sleep ?? delay;
   const logger = options.logger ?? ((message: string) => console.info(message));
@@ -66,27 +65,8 @@ export function createApifyGateway(options: ApifyGatewayOptions): ApifyGateway {
   };
 
   async function execute(input: ApifyRunInput): Promise<ApifyRunResult> {
-    try {
-      const items = await readSync(input);
-      return resultFrom(items, null, null);
-    } catch (error) {
-      if (!(error instanceof ApifyRequestError) || !error.timedOut) throw error;
-      return runAsync(input);
-    }
-  }
-
-  async function readSync(input: ApifyRunInput): Promise<unknown[]> {
-    const response = await call(`${baseUrl}/acts/${ACTOR}/run-sync-get-dataset-items${query()}`, {
-      method: "POST",
-      body: JSON.stringify(input),
-    });
-    const payload = await response.json();
-    if (!Array.isArray(payload)) throw new ApifyRequestError("A Apify devolveu um formato inesperado.");
-    return payload;
-  }
-
-  async function runAsync(input: ApifyRunInput): Promise<ApifyRunResult> {
-    const started = await call(`${baseUrl}/acts/${ACTOR}/runs${query()}`, {
+    const charge = input.mode === "lookup" ? lookupMaxChargeUsd : maxChargeUsd;
+    const started = await call(`${baseUrl}/acts/${ACTOR}/runs?maxTotalChargeUsd=${charge}&waitForFinish=60`, {
       method: "POST",
       body: JSON.stringify(input),
     });
@@ -96,25 +76,35 @@ export function createApifyGateway(options: ApifyGatewayOptions): ApifyGateway {
     if (!runId || !datasetId) throw new ApifyRequestError("A Apify não devolveu a execução.");
     logger(`Apify runId=${runId} datasetId=${datasetId}`);
 
-    for (let poll = 0; poll < 8; poll += 1) {
+    let status = readString(startBody.data, "status");
+    const maxPolls = input.mode === "lookup" ? 30 : 10;
+    for (let poll = 0; !isTerminal(status) && poll < maxPolls; poll += 1) {
       const statusResponse = await call(`${baseUrl}/actor-runs/${runId}?waitForFinish=60`, { method: "GET" });
       const statusBody = await readRecord(statusResponse);
-      const status = readString(statusBody.data, "status");
-      if (status === "SUCCEEDED") {
-        const items = await readDataset(datasetId);
-        return resultFrom(items, runId, datasetId);
-      }
-      if (status === "FAILED" || status === "TIMED-OUT") {
-        throw new ApifyRequestError("A execução da Apify falhou.", { retryable: true, timedOut: status === "TIMED-OUT" });
-      }
-      if (status === "ABORTED") throw new ApifyRequestError("A execução da Apify foi abortada.");
+      status = readString(statusBody.data, "status");
     }
 
-    await call(`${baseUrl}/actor-runs/${runId}/abort`, { method: "POST" });
-    throw new ApifyRequestError("A execução da Apify excedeu o tempo.", { retryable: true, timedOut: true });
+    if (status === "SUCCEEDED") {
+      const items = await readDataset(datasetId);
+      return resultFrom(items, runId, datasetId);
+    }
+    if (status === "FAILED" || status === "TIMED-OUT") {
+      throw new ApifyRequestError("A execução da Apify falhou.", { retryable: true, timedOut: status === "TIMED-OUT" });
+    }
+    if (status === "ABORTED") throw new ApifyRequestError("A execução da Apify foi abortada.");
+    throw new ApifyRequestError("A execução da Apify ainda não terminou.");
   }
 
   async function readDataset(datasetId: string): Promise<unknown[]> {
+    let items = await readPages(datasetId);
+    for (let attempt = 1; items.length === 0 && attempt < 3; attempt += 1) {
+      await sleep(400);
+      items = await readPages(datasetId);
+    }
+    return items;
+  }
+
+  async function readPages(datasetId: string): Promise<unknown[]> {
     const items: unknown[] = [];
     let offset = 0;
     while (true) {
@@ -144,7 +134,7 @@ export function createApifyGateway(options: ApifyGatewayOptions): ApifyGateway {
           "content-type": "application/json",
           "user-agent": USER_AGENT,
         },
-        signal: AbortSignal.timeout(timeoutSeconds * 1000),
+        signal: AbortSignal.timeout((options.timeoutSeconds ?? 90) * 1000),
       });
       if (response.status === 408) throw new ApifyRequestError("A Apify excedeu o tempo.", { timedOut: true, retryable: true });
       if (response.status === 429 || response.status >= 500) {
@@ -173,10 +163,6 @@ export function createApifyGateway(options: ApifyGatewayOptions): ApifyGateway {
       datasetId,
       estimatedCostUsd: roundUsd(companies.length * pricePerResultUsd),
     };
-  }
-
-  function query(): string {
-    return `?timeout=${timeoutSeconds}&memory=${memoryMb}&maxTotalChargeUsd=${maxChargeUsd}`;
   }
 }
 
@@ -246,6 +232,10 @@ function text(value: unknown): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isTerminal(status: string | null): boolean {
+  return status === "SUCCEEDED" || status === "FAILED" || status === "ABORTED" || status === "TIMED-OUT";
 }
 
 function isTimeout(error: unknown): boolean {

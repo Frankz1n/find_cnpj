@@ -5,16 +5,20 @@ import { Link } from "react-router-dom";
 type PageHeaderProps = {
   title: string;
   subtitle: string;
+  notice?: ReactNode;
 };
 
-export function PageHeader({ title, subtitle }: PageHeaderProps) {
+export function PageHeader({ title, subtitle, notice }: PageHeaderProps) {
   return (
-    <header className="flex items-start justify-between gap-4">
-      <div className="min-w-0">
-        <h1 className="text-2xl font-semibold tracking-tight text-[#1d2433] sm:text-[28px]">{title}</h1>
-        <p className="mt-1 text-sm text-[#98a2b3]">{subtitle}</p>
+    <header className="flex flex-col gap-4">
+      {notice ? <div className="flex justify-end">{notice}</div> : null}
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="truncate text-2xl font-semibold tracking-tight text-[#1d2433] sm:text-[28px]" title={title}>{title}</h1>
+          <p className="mt-1 text-sm text-[#98a2b3]">{subtitle}</p>
+        </div>
+        <Toolbar />
       </div>
-      <Toolbar />
     </header>
   );
 }

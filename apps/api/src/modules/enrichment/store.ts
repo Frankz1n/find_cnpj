@@ -33,6 +33,11 @@ export type ResultRecord = {
   brasilApi: BrasilApiNote | null;
 };
 
+export type StoredSheet = {
+  defaultState: string;
+  rows: SheetRow[];
+};
+
 export type JobRecord = {
   id: string;
   fileName: string;
@@ -106,6 +111,10 @@ export class EnrichmentStore {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.database = new DatabaseSync(path);
     this.database.exec(SCHEMA);
+    const columns = this.database.prepare("PRAGMA table_info(cnpj_enrichment_job)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "planilha")) {
+      this.database.exec("ALTER TABLE cnpj_enrichment_job ADD COLUMN planilha TEXT");
+    }
     const insert = this.database.prepare("INSERT OR IGNORE INTO cnae_catalog (codigo, descricao) VALUES (?, ?)");
     for (const cnae of DEFAULT_CNAES) insert.run(cnae.code, cnae.description);
   }
@@ -116,6 +125,18 @@ export class EnrichmentStore {
       descricao: string;
     }>;
     return rows.map((row) => ({ code: row.codigo, description: row.descricao }));
+  }
+
+  saveSheet(jobId: string, sheet: StoredSheet): void {
+    this.database.prepare("UPDATE cnpj_enrichment_job SET planilha = ? WHERE id = ?").run(JSON.stringify(sheet), jobId);
+  }
+
+  readSheet(jobId: string): StoredSheet | null {
+    const row = this.database.prepare("SELECT planilha FROM cnpj_enrichment_job WHERE id = ?").get(jobId) as { planilha: string | null } | undefined;
+    if (!row?.planilha) return null;
+    const parsed = JSON.parse(row.planilha) as StoredSheet;
+    if (!parsed || !Array.isArray(parsed.rows) || typeof parsed.defaultState !== "string") return null;
+    return parsed;
   }
 
   createJob(job: JobRecord): void {
@@ -200,7 +221,7 @@ export class EnrichmentStore {
         `UPDATE cnpj_enrichment_result
          SET cnpj = ?, razao_social = ?, nome_fantasia = ?, situacao_cadastral = ?, endereco_receita = ?,
              telefones_receita = ?, confianca = ?, score = ?, justificativa = ?, alternativas = ?,
-             revisado_por = ?, revisado_em = ?, decisao_final = ?
+             revisado_por = ?, revisado_em = ?, decisao_final = ?, brasil_api = ?
          WHERE id = ?`,
       )
       .run(
@@ -217,6 +238,7 @@ export class EnrichmentStore {
         result.reviewedBy,
         result.reviewedAt,
         result.decision,
+        result.brasilApi ? JSON.stringify(result.brasilApi) : null,
         result.id,
       );
   }

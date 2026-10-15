@@ -1,10 +1,24 @@
 import { isValidCnpj } from "../../search/cnpj.js";
 
+export type BrasilApiPartner = {
+  name: string;
+  role: string | null;
+};
+
 export type BrasilApiCompany = {
   cnpj: string;
   legalName: string | null;
   tradeName: string | null;
   registrationStatus: string | null;
+  openedAt: string | null;
+  legalNature: string | null;
+  size: string | null;
+  capital: string | null;
+  email: string | null;
+  branch: string | null;
+  mainCnae: string | null;
+  secondaryCnaes: string[];
+  partners: BrasilApiPartner[];
   phones: string[];
   address: string | null;
   city: string | null;
@@ -28,6 +42,15 @@ export function mapBrasilApiCompany(value: unknown): BrasilApiCompany | null {
     legalName,
     tradeName: readText(value.nome_fantasia),
     registrationStatus: readText(value.descricao_situacao_cadastral),
+    openedAt: readText(value.data_inicio_atividade),
+    legalNature: readText(value.natureza_juridica),
+    size: readText(value.porte),
+    capital: readCapital(value.capital_social),
+    email: readText(value.email),
+    branch: readText(value.descricao_identificador_matriz_filial),
+    mainCnae: readText(value.cnae_fiscal_descricao),
+    secondaryCnaes: readActivities(value.cnaes_secundarios),
+    partners: readPartners(value.qsa),
     phones,
     address: joinParts([
       streetWithNumber,
@@ -38,6 +61,34 @@ export function mapBrasilApiCompany(value: unknown): BrasilApiCompany | null {
     city: readText(value.municipio),
     state: readState(value.uf),
   };
+}
+
+function readCapital(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const [reais, cents] = value.toFixed(2).split(".");
+    const grouped = (reais ?? "0").replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+    return `R$ ${grouped},${cents ?? "00"}`;
+  }
+  return readTextish(value);
+}
+
+function readActivities(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return unique(value.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const description = readText(item.descricao);
+    return description ? [description] : [];
+  }));
+}
+
+function readPartners(value: unknown): BrasilApiPartner[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const name = readText(item.nome_socio);
+    if (!name) return [];
+    return [{ name, role: readText(item.qualificacao_socio) }];
+  });
 }
 
 function readCnpj(value: unknown): string | null {

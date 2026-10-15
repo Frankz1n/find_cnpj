@@ -29,6 +29,7 @@ export function createApp(env: Env, services: AppServices = {}): Express {
   });
 
   app.use("/api", createEnrichmentRouter(wired));
+  app.locals.enrichment = wired;
 
   app.use((_request, response) => {
     response.status(404).json({
